@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
@@ -7,7 +7,7 @@ import { SalesStageIndicator } from './SalesStageIndicator';
 import { TranscriptPanel } from './TranscriptPanel';
 import { ListeningIndicator } from './ListeningIndicator';
 import { SettingsPanel } from './SettingsPanel';
-import { Phone, PhoneOff, RotateCcw } from 'lucide-react';
+import { Phone, PhoneOff, RotateCcw, Volume2, AlertCircle } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
 interface TranscriptEntry {
@@ -30,16 +30,24 @@ interface AIResponse {
   callerSentiment: 'positive' | 'neutral' | 'hesitant' | 'negative';
 }
 
+const OPENING_LINES = [
+  "Hi! Thanks for picking up. Do you have a quick moment?",
+  "Hey there! I hope I'm not catching you at a bad time?",
+  "Hi, this is [Your Name]. Did I catch you at an okay time?",
+];
+
 export function CallAssistant() {
   const { toast } = useToast();
   const [isCallActive, setIsCallActive] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentStage, setCurrentStage] = useState('greeting');
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
+  const [micLevel, setMicLevel] = useState(0);
+  const [showMicTest, setShowMicTest] = useState(false);
   const [currentSuggestion, setCurrentSuggestion] = useState<AIResponse>({
-    suggestion: "Hi! Thanks for picking up. Do you have a quick moment?",
+    suggestion: OPENING_LINES[0],
     stage: 'greeting',
-    tip: 'Be warm and ask permission to talk',
+    tip: 'Say this when they pick up. Be warm and friendly!',
     callerSentiment: 'neutral',
   });
   const [settings, setSettings] = useState<CallSettings>({
@@ -47,16 +55,62 @@ export function CallAssistant() {
     style: 'warm',
     customStyle: '',
   });
+  const [waitingForCaller, setWaitingForCaller] = useState(false);
 
   const lastProcessedRef = useRef<string>('');
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationRef = useRef<number | null>(null);
+
+  // Mic level visualization
+  const startMicVisualization = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioContextRef.current = new AudioContext();
+      analyserRef.current = audioContextRef.current.createAnalyser();
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+      source.connect(analyserRef.current);
+      analyserRef.current.fftSize = 256;
+
+      const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+
+      const updateLevel = () => {
+        if (analyserRef.current) {
+          analyserRef.current.getByteFrequencyData(dataArray);
+          const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+          setMicLevel(average / 255);
+        }
+        animationRef.current = requestAnimationFrame(updateLevel);
+      };
+      updateLevel();
+    } catch (error) {
+      console.error('Mic visualization error:', error);
+    }
+  }, []);
+
+  const stopMicVisualization = useCallback(() => {
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
+    setMicLevel(0);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopMicVisualization();
+    };
+  }, [stopMicVisualization]);
 
   const processTranscript = useCallback(async (text: string) => {
-    // Avoid processing the same text twice
     if (text === lastProcessedRef.current || text.length < 3) return;
     lastProcessedRef.current = text;
 
     setIsProcessing(true);
+    setWaitingForCaller(false);
 
     try {
       const styleText = settings.style === 'custom' ? settings.customStyle : settings.style;
@@ -104,7 +158,6 @@ export function CallAssistant() {
 
   const handleSpeechResult = useCallback((text: string, isFinal: boolean) => {
     if (isFinal && text.trim().length > 0) {
-      // Add to transcript
       const newEntry: TranscriptEntry = {
         id: Date.now().toString(),
         role: 'caller',
@@ -113,7 +166,6 @@ export function CallAssistant() {
       };
       setTranscript(prev => [...prev, newEntry]);
 
-      // Debounce AI call to avoid too many requests
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
       }
@@ -154,25 +206,29 @@ export function CallAssistant() {
     setIsCallActive(true);
     setTranscript([]);
     setCurrentStage('greeting');
+    setWaitingForCaller(true);
     setCurrentSuggestion({
-      suggestion: "Hi! Thanks for picking up. Do you have a quick moment?",
+      suggestion: OPENING_LINES[0],
       stage: 'greeting',
-      tip: 'Be warm and ask permission to talk',
+      tip: '👆 SAY THIS when they pick up! Then wait for their response.',
       callerSentiment: 'neutral',
     });
     lastProcessedRef.current = '';
     
     await startListening();
+    await startMicVisualization();
     
     toast({
-      title: 'Call started',
-      description: 'Listening to the caller. The AI will suggest what to say.',
+      title: '📞 Call started!',
+      description: 'Read the script above when they answer. Mic is listening for their response.',
     });
-  }, [isSupported, startListening, toast]);
+  }, [isSupported, startListening, startMicVisualization, toast]);
 
   const endCall = useCallback(() => {
     setIsCallActive(false);
+    setWaitingForCaller(false);
     stopListening();
+    stopMicVisualization();
     
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
@@ -182,15 +238,16 @@ export function CallAssistant() {
       title: 'Call ended',
       description: `${transcript.length} exchanges recorded.`,
     });
-  }, [stopListening, transcript.length, toast]);
+  }, [stopListening, stopMicVisualization, transcript.length, toast]);
 
   const resetCall = useCallback(() => {
     setTranscript([]);
     setCurrentStage('greeting');
+    setWaitingForCaller(true);
     setCurrentSuggestion({
-      suggestion: "Hi! Thanks for picking up. Do you have a quick moment?",
+      suggestion: OPENING_LINES[0],
       stage: 'greeting',
-      tip: 'Be warm and ask permission to talk',
+      tip: '👆 SAY THIS when they pick up! Then wait for their response.',
       callerSentiment: 'neutral',
     });
     lastProcessedRef.current = '';
@@ -204,7 +261,13 @@ export function CallAssistant() {
       timestamp: new Date(),
     };
     setTranscript(prev => [...prev, newEntry]);
-  }, [currentSuggestion.suggestion]);
+    setWaitingForCaller(true);
+    
+    toast({
+      title: '✓ Got it!',
+      description: 'Now waiting for their response...',
+    });
+  }, [currentSuggestion.suggestion, toast]);
 
   const getStatus = () => {
     if (!isCallActive) return 'idle';
@@ -260,6 +323,32 @@ export function CallAssistant() {
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
         {/* Suggestion Panel - Main focus */}
         <div className="flex-1 p-4 lg:p-8 flex flex-col">
+          {/* Mic Level Indicator when active */}
+          {isCallActive && (
+            <div className="mb-4 flex items-center justify-center gap-3 p-3 rounded-lg bg-card border border-border">
+              <Volume2 className="w-4 h-4 text-muted-foreground" />
+              <div className="flex-1 max-w-xs h-2 bg-muted rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-primary transition-all duration-75 rounded-full"
+                  style={{ width: `${micLevel * 100}%` }}
+                />
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {micLevel > 0.1 ? '🎤 Hearing audio' : '🔇 Waiting for voice...'}
+              </span>
+            </div>
+          )}
+
+          {/* Waiting indicator */}
+          {isCallActive && waitingForCaller && !isProcessing && (
+            <div className="mb-4 flex items-center justify-center gap-2 text-accent animate-pulse">
+              <AlertCircle className="w-4 h-4" />
+              <span className="text-sm font-medium">
+                Say the script above, then wait for them to respond
+              </span>
+            </div>
+          )}
+
           <div className="flex-1 flex items-center justify-center">
             <div className="w-full max-w-2xl">
               <SuggestionCard
@@ -267,18 +356,30 @@ export function CallAssistant() {
                 tip={currentSuggestion.tip}
                 sentiment={currentSuggestion.callerSentiment}
                 isLoading={isProcessing}
-                isActive={isCallActive}
+                isActive={isCallActive || true}
               />
               
               {isCallActive && (
                 <div className="mt-4 flex justify-center">
                   <Button
-                    variant="outline"
-                    size="sm"
+                    variant="default"
+                    size="lg"
                     onClick={markSuggestionUsed}
-                    className="text-xs"
+                    className="gap-2"
                   >
-                    I said this ✓
+                    ✓ I said this - waiting for their reply
+                  </Button>
+                </div>
+              )}
+
+              {!isCallActive && (
+                <div className="mt-6 text-center space-y-3">
+                  <p className="text-muted-foreground">
+                    👆 This is what you'll say when they pick up
+                  </p>
+                  <Button onClick={startCall} size="lg" className="gap-2">
+                    <Phone className="w-5 h-5" />
+                    Start Call & Listen
                   </Button>
                 </div>
               )}
