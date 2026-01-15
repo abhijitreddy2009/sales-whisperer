@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { SuggestionCard } from './SuggestionCard';
@@ -7,7 +8,7 @@ import { SalesStageIndicator } from './SalesStageIndicator';
 import { TranscriptPanel } from './TranscriptPanel';
 import { ListeningIndicator } from './ListeningIndicator';
 import { SettingsPanel } from './SettingsPanel';
-import { Phone, PhoneOff, RotateCcw, Volume2, AlertCircle } from 'lucide-react';
+import { Phone, PhoneOff, RotateCcw, Volume2, Send, Keyboard } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
 interface TranscriptEntry {
@@ -32,8 +33,6 @@ interface AIResponse {
 
 const OPENING_LINES = [
   "Hi! Thanks for picking up. Do you have a quick moment?",
-  "Hey there! I hope I'm not catching you at a bad time?",
-  "Hi, this is [Your Name]. Did I catch you at an okay time?",
 ];
 
 export function CallAssistant() {
@@ -43,7 +42,9 @@ export function CallAssistant() {
   const [currentStage, setCurrentStage] = useState('greeting');
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [micLevel, setMicLevel] = useState(0);
-  const [showMicTest, setShowMicTest] = useState(false);
+  const [speechStatus, setSpeechStatus] = useState<string>('');
+  const [manualInput, setManualInput] = useState('');
+  const [showManualInput, setShowManualInput] = useState(false);
   const [currentSuggestion, setCurrentSuggestion] = useState<AIResponse>({
     suggestion: OPENING_LINES[0],
     stage: 'greeting',
@@ -62,11 +63,13 @@ export function CallAssistant() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   // Mic level visualization
   const startMicVisualization = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
       audioContextRef.current = new AudioContext();
       analyserRef.current = audioContextRef.current.createAnalyser();
       const source = audioContextRef.current.createMediaStreamSource(stream);
@@ -96,6 +99,9 @@ export function CallAssistant() {
     if (audioContextRef.current) {
       audioContextRef.current.close();
     }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
     setMicLevel(0);
   }, []);
 
@@ -106,7 +112,7 @@ export function CallAssistant() {
   }, [stopMicVisualization]);
 
   const processTranscript = useCallback(async (text: string) => {
-    if (text === lastProcessedRef.current || text.length < 3) return;
+    if (text === lastProcessedRef.current || text.length < 2) return;
     lastProcessedRef.current = text;
 
     setIsProcessing(true);
@@ -114,6 +120,8 @@ export function CallAssistant() {
 
     try {
       const styleText = settings.style === 'custom' ? settings.customStyle : settings.style;
+      
+      console.log('🚀 Calling AI with:', text);
       
       const { data, error } = await supabase.functions.invoke('sales-assistant', {
         body: {
@@ -130,7 +138,7 @@ export function CallAssistant() {
 
       if (error) throw error;
 
-      console.log('AI Response:', data);
+      console.log('✅ AI Response:', data);
 
       if (data.suggestion) {
         setCurrentSuggestion({
@@ -157,6 +165,8 @@ export function CallAssistant() {
   }, [settings, currentStage, transcript, toast]);
 
   const handleSpeechResult = useCallback((text: string, isFinal: boolean) => {
+    console.log('🎤 Speech result:', { text, isFinal });
+    
     if (isFinal && text.trim().length > 0) {
       const newEntry: TranscriptEntry = {
         id: Date.now().toString(),
@@ -187,9 +197,14 @@ export function CallAssistant() {
     }
   }, [toast]);
 
+  const handleStatusChange = useCallback((status: string) => {
+    setSpeechStatus(status);
+  }, []);
+
   const { isListening, isSupported, interimTranscript, startListening, stopListening } = useSpeechRecognition({
     onResult: handleSpeechResult,
     onError: handleSpeechError,
+    onStatusChange: handleStatusChange,
     continuous: true,
   });
 
@@ -269,6 +284,22 @@ export function CallAssistant() {
     });
   }, [currentSuggestion.suggestion, toast]);
 
+  const handleManualSubmit = useCallback(() => {
+    if (!manualInput.trim()) return;
+    
+    const text = manualInput.trim();
+    setManualInput('');
+    
+    const newEntry: TranscriptEntry = {
+      id: Date.now().toString(),
+      role: 'caller',
+      text,
+      timestamp: new Date(),
+    };
+    setTranscript(prev => [...prev, newEntry]);
+    processTranscript(text);
+  }, [manualInput, processTranscript]);
+
   const getStatus = () => {
     if (!isCallActive) return 'idle';
     if (isProcessing) return 'processing';
@@ -292,9 +323,19 @@ export function CallAssistant() {
             <SettingsPanel settings={settings} onSettingsChange={setSettings} />
             
             {isCallActive && (
-              <Button variant="outline" size="sm" onClick={resetCall}>
-                <RotateCcw className="w-4 h-4" />
-              </Button>
+              <>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setShowManualInput(!showManualInput)}
+                  title="Type what caller said"
+                >
+                  <Keyboard className="w-4 h-4" />
+                </Button>
+                <Button variant="outline" size="sm" onClick={resetCall}>
+                  <RotateCcw className="w-4 h-4" />
+                </Button>
+              </>
             )}
             
             {!isCallActive ? (
@@ -323,29 +364,44 @@ export function CallAssistant() {
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
         {/* Suggestion Panel - Main focus */}
         <div className="flex-1 p-4 lg:p-8 flex flex-col">
-          {/* Mic Level Indicator when active */}
+          {/* Mic Level & Status when active */}
           {isCallActive && (
-            <div className="mb-4 flex items-center justify-center gap-3 p-3 rounded-lg bg-card border border-border">
-              <Volume2 className="w-4 h-4 text-muted-foreground" />
-              <div className="flex-1 max-w-xs h-2 bg-muted rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-primary transition-all duration-75 rounded-full"
-                  style={{ width: `${micLevel * 100}%` }}
-                />
+            <div className="mb-4 space-y-2">
+              <div className="flex items-center justify-center gap-3 p-3 rounded-lg bg-card border border-border">
+                <Volume2 className="w-4 h-4 text-muted-foreground" />
+                <div className="flex-1 max-w-xs h-3 bg-muted rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-primary transition-all duration-75 rounded-full"
+                    style={{ width: `${Math.max(micLevel * 100, 2)}%` }}
+                  />
+                </div>
+                <span className="text-xs text-muted-foreground min-w-[120px]">
+                  {micLevel > 0.15 ? '🎤 Hearing audio!' : micLevel > 0.05 ? '🔈 Some sound...' : '🔇 Quiet...'}
+                </span>
               </div>
-              <span className="text-xs text-muted-foreground">
-                {micLevel > 0.1 ? '🎤 Hearing audio' : '🔇 Waiting for voice...'}
-              </span>
-            </div>
-          )}
+              
+              {/* Speech status */}
+              {speechStatus && (
+                <div className="text-center text-xs text-muted-foreground">
+                  Status: {speechStatus} | {interimTranscript && <span className="text-primary">"{interimTranscript}"</span>}
+                </div>
+              )}
 
-          {/* Waiting indicator */}
-          {isCallActive && waitingForCaller && !isProcessing && (
-            <div className="mb-4 flex items-center justify-center gap-2 text-accent animate-pulse">
-              <AlertCircle className="w-4 h-4" />
-              <span className="text-sm font-medium">
-                Say the script above, then wait for them to respond
-              </span>
+              {/* Manual input option */}
+              {showManualInput && (
+                <div className="flex gap-2 max-w-xl mx-auto">
+                  <Input
+                    placeholder="Type what the caller said..."
+                    value={manualInput}
+                    onChange={(e) => setManualInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleManualSubmit()}
+                    className="flex-1"
+                  />
+                  <Button onClick={handleManualSubmit} size="icon">
+                    <Send className="w-4 h-4" />
+                  </Button>
+                </div>
+              )}
             </div>
           )}
 
@@ -360,7 +416,7 @@ export function CallAssistant() {
               />
               
               {isCallActive && (
-                <div className="mt-4 flex justify-center">
+                <div className="mt-4 flex flex-col items-center gap-3">
                   <Button
                     variant="default"
                     size="lg"
@@ -369,6 +425,10 @@ export function CallAssistant() {
                   >
                     ✓ I said this - waiting for their reply
                   </Button>
+                  
+                  <p className="text-xs text-muted-foreground text-center">
+                    💡 Mic not working? Click <Keyboard className="w-3 h-3 inline" /> to type what caller says
+                  </p>
                 </div>
               )}
 
@@ -381,6 +441,9 @@ export function CallAssistant() {
                     <Phone className="w-5 h-5" />
                     Start Call & Listen
                   </Button>
+                  <p className="text-xs text-muted-foreground">
+                    Works best in Chrome/Edge with phone on speaker near mic
+                  </p>
                 </div>
               )}
             </div>
