@@ -16,6 +16,9 @@ interface TranscriptPanelProps {
   className?: string;
 }
 
+// caller = the CLIENT (person being called)
+// suggestion = what YOU (the cold caller) said
+
 export function TranscriptPanel({ entries, interimText, className }: TranscriptPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);

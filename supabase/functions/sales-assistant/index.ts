@@ -23,14 +23,23 @@ serve(async (req) => {
     // Build minimal context for speed
     const recentHistory = conversationHistory?.slice(-3) || [];
     const historyText = recentHistory.length > 0 
-      ? recentHistory.map((h: { role: string; text: string }) => `${h.role}: "${h.text}"`).join(' → ')
+      ? recentHistory.map((h: { role: string; text: string }) => 
+          h.role === 'caller' ? `Client: "${h.text}"` : `You said: "${h.text}"`
+        ).join(' → ')
       : '';
 
-    const prompt = `You're a sales coach. Goal: ${goal || "get interest"}. Style: ${style || "warm"}.
-${historyText ? `Recent: ${historyText}` : ''}
-Caller said: "${transcript}"
+    const prompt = `You are writing a script for a COLD CALLER (salesperson). 
+The cold caller's goal: ${goal || "get the client interested"}
+Style: ${style || "warm, professional"}
 
-Reply JSON only: {"suggestion":"1-2 sentence response","stage":"${currentStage}","tip":"5 words max","callerSentiment":"neutral"}`;
+${historyText ? `Conversation so far: ${historyText}` : ''}
+
+The CLIENT (person being called) just said: "${transcript}"
+
+Write what the COLD CALLER should say next. Keep it natural, 1-2 sentences max.
+
+Reply in JSON only:
+{"suggestion":"what the cold caller should say","stage":"${currentStage}","tip":"3-5 word tip","callerSentiment":"positive/neutral/hesitant/negative"}`;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -39,9 +48,9 @@ Reply JSON only: {"suggestion":"1-2 sentence response","stage":"${currentStage}"
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash-lite", // Fastest model
+        model: "google/gemini-2.5-flash-lite",
         messages: [{ role: "user", content: prompt }],
-        max_tokens: 150, // Short response
+        max_tokens: 150,
       }),
     });
 
@@ -51,9 +60,9 @@ Reply JSON only: {"suggestion":"1-2 sentence response","stage":"${currentStage}"
       
       if (response.status === 429) {
         return new Response(JSON.stringify({ 
-          suggestion: "That's interesting, tell me more.",
+          suggestion: "I totally understand. Could I ask what's your biggest challenge with that right now?",
           stage: currentStage,
-          tip: "Keep listening",
+          tip: "Keep them talking",
           callerSentiment: "neutral"
         }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -75,9 +84,9 @@ Reply JSON only: {"suggestion":"1-2 sentence response","stage":"${currentStage}"
       }
     } catch {
       parsed = {
-        suggestion: "That's interesting, could you tell me more?",
+        suggestion: "I hear you. What would make the biggest difference for you right now?",
         stage: currentStage || "discovery",
-        tip: "Stay curious",
+        tip: "Ask open questions",
         callerSentiment: "neutral"
       };
     }
@@ -92,9 +101,9 @@ Reply JSON only: {"suggestion":"1-2 sentence response","stage":"${currentStage}"
     console.error("Error:", error);
     return new Response(JSON.stringify({ 
       error: error instanceof Error ? error.message : "Unknown error",
-      suggestion: "I see. Tell me more about that.",
+      suggestion: "That makes sense. What's been your experience with that?",
       stage: "discovery",
-      tip: "Listen",
+      tip: "Stay curious",
       callerSentiment: "neutral"
     }), {
       status: 500,
