@@ -45,7 +45,9 @@ export function SuggestionCard({
   isActive,
   className,
 }: SuggestionCardProps) {
-  const SentimentIcon = sentimentConfig[sentiment].icon;
+  // Ensure sentiment is valid, fallback to neutral
+  const validSentiment = sentiment && sentimentConfig[sentiment] ? sentiment : 'neutral';
+  const SentimentIcon = sentimentConfig[validSentiment].icon;
 
   return (
     <div
@@ -75,11 +77,11 @@ export function SuggestionCard({
         {/* Sentiment indicator */}
         <div className={cn(
           "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium",
-          sentimentConfig[sentiment].bg,
-          sentimentConfig[sentiment].color
+          sentimentConfig[validSentiment].bg,
+          sentimentConfig[validSentiment].color
         )}>
           <SentimentIcon className="w-3 h-3" />
-          <span>{sentimentConfig[sentiment].label}</span>
+          <span>{sentimentConfig[validSentiment].label}</span>
         </div>
       </div>
 
