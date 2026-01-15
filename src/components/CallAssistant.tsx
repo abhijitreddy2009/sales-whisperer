@@ -179,9 +179,10 @@ export function CallAssistant() {
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
       }
+      // Faster - only 150ms delay
       debounceRef.current = setTimeout(() => {
         processTranscript(text.trim());
-      }, 500);
+      }, 150);
     }
   }, [processTranscript]);
 
